@@ -4,8 +4,10 @@ const Web3 = require('web3');
 // 配置项
 const CONFIG = {
     SLEEP_TIME: 200,
-    PRIVATE_KEY: '这里填写你的私钥'
+    PRIVATE_KEY: '这里填写你的私钥',
+    GAS_PRICE_GWEI: '0.5'  // 添加 gas price 配置，单位 gwei
 };
+
 
 // 添加统一的日志输出方法
 const log = (message) => {
@@ -85,59 +87,67 @@ async function checkEligibility() {
 
 async function simulateClaim() {
   try {
-    const contractAddress = '0xbd33cD4e1B65f8A5c2cA55D160316f9A9f119AE5';
+    const contractAddress = '0x4190e02240f16BE4CC03c7151DEeDd23c08a3d4e';
     const abi = [{
       "inputs": [
         {"internalType": "address","name": "account","type": "address"},
         {"internalType": "uint256","name": "ticket","type": "uint256"},
         {"internalType": "bytes","name": "signature","type": "bytes"}
       ],
-      "name": "claimFucker",
-      "outputs": [{"internalType": "uint256","name": "","type": "uint256"}],
+      "name": "claim",
+      "outputs": [{"internalType": "uint256","name": "amount","type": "uint256"}],
       "stateMutability": "nonpayable",
       "type": "function"
     }];
 
     const contract = new web3.eth.Contract(abi, contractAddress);
     
-    // 模拟交易
     try {
-      const result = await contract.methods.claimFucker(
+      // 模拟调用，添加 from 参数
+      const result = await contract.methods.claim(
         tokenData.account,
         tokenData.ticket,
         tokenData.signature
-      ).call();
+      ).call({
+        from: WALLET_ADDRESS  // 添加 from 参数
+      });
 
-      // 如果模拟成功，立即发送实际交易
-      const tx = {
-        from: WALLET_ADDRESS,
-        to: contractAddress,
-        gas: 300000, // 设置适当的 gas 限制
-        data: contract.methods.claimFucker(
-          tokenData.account,
-          tokenData.ticket,
-          tokenData.signature
-        ).encodeABI()
-      };
+      // 转换为代币数量（8位小数）
+      const tokenAmount = Number(result) / Math.pow(10, 8);
+      log(`模拟调用结果: ${tokenAmount}`);
 
-      // 获取 gas price
-      const gasPrice = await web3.eth.getGasPrice();
-      tx.gasPrice = gasPrice * 2;
+      // 检查是否为目标数量
+      if (tokenAmount === 4700) {
+        // 如果是目标数量，发送实际交易
+        const tx = {
+          from: WALLET_ADDRESS,
+          to: contractAddress,
+          gas: 300000,
+          gasPrice: web3.utils.toWei(CONFIG.GAS_PRICE_GWEI, 'gwei'),
+          data: contract.methods.claim(
+            tokenData.account,
+            tokenData.ticket,
+            tokenData.signature
+          ).encodeABI()
+        };
 
-      // 签名并发送交易
-      const signedTx = await web3.eth.accounts.signTransaction(tx, CONFIG.PRIVATE_KEY);
-      const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
-      
-      log(`交易成功! 交易哈希: ${receipt.transactionHash}`);
-      return {
-        decimal: (Number(result) / Math.pow(10, 8)).toString(),
-        txHash: receipt.transactionHash
-      };
-    } catch (error) {
-      // 捕获 revert 错误信息
-      if (error.message.includes('revert')) {
-        log(`模拟失败: ${error.message}`);
+        const signedTx = await web3.eth.accounts.signTransaction(tx, CONFIG.PRIVATE_KEY);
+        const receipt = await web3.eth.sendSignedTransaction(signedTx.rawTransaction);
+        
+        log(`交易成功! 交易哈希: ${receipt.transactionHash}`);
+        return {
+          decimal: tokenAmount.toString(),
+          txHash: receipt.transactionHash
+        };
       }
+
+      // 如果不是目标数量，返回结果继续循环
+      return {
+        decimal: tokenAmount.toString()
+      };
+
+    } catch (error) {
+      log(`模拟调用失败: ${error.message}`);
       throw error;
     }
   } catch (error) {
@@ -150,22 +160,20 @@ async function simulateClaimUntilTarget() {
     while (true) {
       try {
         const result = await simulateClaim();
-        log(`代币数量: ${result.decimal}`);
         
-        if (result.decimal === '4700') {
-          log('交易成功执行!');
+        // 如果有交易哈希，说明交易已成功，退出循环
+        if (result.txHash) {
+          log('找到目标数量并完成交易!');
           return result;
         }
+        
+        // 否则继续循环
+        await sleep(CONFIG.SLEEP_TIME);
       } catch (error) {
-        // 如果是 revert 错误，继续循环
-        if (error.message.includes('revert')) {
-          await sleep(CONFIG.SLEEP_TIME);
-          continue;
-        }
-        throw error;
+        log(`本轮模拟失败，等待下一轮...`);
+        await sleep(CONFIG.SLEEP_TIME);
+        continue;
       }
-      
-      await sleep(CONFIG.SLEEP_TIME);
     }
   } catch (error) {
     log(`循环模拟失败: ${error.message}`);
